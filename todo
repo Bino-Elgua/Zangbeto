@@ -1,0 +1,858 @@
+**The only part of Zero worth taking for Omo-Koda2 is its structured error and repair format.**
+
+Zero forces every compilation error and diagnostic into clean, machine-readable JSON that an AI agent can actually act on. That pattern fits your architecture perfectly — especially in the **Rust steward core** and **Osovm**.
+
+You could adapt this so that every time something fails in any of your languages (Julia, Python, Lisp, Move, etc.), Osovm or the Rust core spits out the same structured JSON shape. That way your agent can reliably read the error, understand it, and fix it — no matter which language threw it.
+
+Everything else in Zero — the language syntax, the tiny binary size, the effects system — doesn't map cleanly to your multi-language fractal design. Just steal the **structured diagnostics and repair plan format**. It's small, focused, and actually useful to you.
+
+What about Move and adding that with gh repo clone Bino-Elgua/Zangbeto
+
+**Yes, you can and should include Move.**
+
+Here's how it fits cleanly:
+
+**Move’s role for this concept:**  
+Since Move runs on-chain (Sui), it should emit the same structured diagnostic format when transactions fail, when receipts are invalid, or when economic rules (staking, slashing, royalties) are violated. This lets your agent understand on-chain errors the same way it understands Rust or Julia errors.
+
+**Recommended approach:**
+
+- Keep the **canonical schema** defined in your Rust crate (`omo-diagnostic`).
+- In Zangbeto (which is your security/audit layer), add validation logic that checks whether Move errors conform to that same format.
+- When you run `gh repo clone Bino-Elgua/Zangbeto`, treat it as the guardian that enforces this contract across *all* languages, including Move.
+
+So the full flow becomes:  
+Rust defines the format → Every language (including Move) must output it → Zangbeto audits and enforces it.
+
+**The only part of Zero worth taking for Omo-Koda2 is its structured error and repair format.**
+
+Zero forces every compilation error and diagnostic into clean, machine-readable JSON that an AI agent can actually act on. That pattern fits your architecture perfectly — especially in the **Rust steward core** and **Osovm**.
+
+You could adapt this so that every time something fails in any of your languages (Julia, Python, Lisp, Move, etc.), Osovm or the Rust core spits out the same structured JSON shape. That way your agent can reliably read the error, understand it, and fix it — no matter which language threw it.
+
+
+Ògún forges for you:
+
+## 🔍 Zàngbétò Repository Analysis — Current State
+
+### Existing Structure (`Bino-Elgua/Zangbeto`)
+
+```
+zangbeto/
+├── Move.toml              # Sui Move package config (v0.1.8)
+├── package.json           # Node deps: @mysten/sui.js, arweave, dotenv
+├── Makefile               # patrol/anchor/shrine-bootstrap targets
+├── README.md              # Ritual-driven red-team protocol docs
+├── .env.example           # SUI_NETWORK, ARWEAVE_KEY, etc.
+├── shrine/
+│   ├── sources/
+│   │   ├── zbt_errors.move    # Error codes (E_NOT_WITNESS=9101, etc.)
+│   │   ├── zbt_guard.move     # Event emission: InvariantBreach, ReceiptEvent, FixEvent
+│   │   └── zbt_core.move      # ReceiptLedger, WitnessSet, lifecycle functions
+│   ├── examples/
+│   │   └── payments.move      # Example contract with intentional bug
+│   └── scripts/               # (referenced but not visible via API)
+└── ops/
+    └── sabbath_checklist.md   # Clock access, SHA-256 hash, import notes
+```
+
+### Current Diagnostic/Receipt Flow
+```
+[Find Bug] → [Test/Prover] → receipt.json 
+    → [Arweave Anchor] → [OTS Proof] 
+    → [Submit On-Chain] → [Sabbath: attest/mark_fixed/accept_risk]
+```
+
+**ReceiptMeta struct (zbt_core.move):**
+```move
+struct ReceiptMeta has store {
+    submitter: address,
+    timestamp: u64,
+    hash: vector<u8>,          // SHA-256 (32 bytes required)
+    tag: vector<u8>,           // e.g., b"overflow"
+    rule: vector<u8>,          // e.g., b"payments.balance_check"
+    severity: u8,              // 0-255 (semantic meaning undefined)
+    arweave_tx: vector<u8>,    // Arweave transaction ID
+    btc_ots: vector<u8>,       // OpenTimestamps proof
+    status: u8,                // 0=submitted,1=verified,2=disputed,3=fixed,4=risk-accepted
+}
+```
+
+**Gap Analysis:**
+| Feature | Current Zangbeto | Required for Omo-Koda2 Integration |
+|---------|-----------------|-----------------------------------|
+| Diagnostic Schema | Free-form `tag`/`rule` vectors | Canonical JSON schema with `code`, `category`, `context`, `repair` |
+| Repair Plans | None (only `mark_fixed` status) | Structured `RepairPlan` with `steps`, `validation`, `strategy` |
+| Cross-Language | Move-only | Rust/Python/Julia/Lisp/Move emission helpers |
+| Agent Actionability | Human-readable events only | Machine-executable `repair.id` + `strategy` |
+| Audit Trail | Arweave+OTS hash only | Full `audit_trail` with Zangbeto signature + anchor proofs |
+| Temporal Logic | Basic `Clock` timestamp | `context.sabbath_active` + Rhythm-module gating |
+
+---
+
+## ⚒️ Implementation Plan: Embed Structured Diagnostics into Zàngbétò
+
+### Phase 1: Canonical Schema Definition (Week 1)
+
+#### 1.1 Create `zbt_diagnostics.move` — Schema Enforcement Module
+```move
+// shrine/sources/zbt_diagnostics.move
+module zbt::diagnostics {
+    use std::string;
+    use std::vector;
+    use 0x2::object::{Self, UID};
+    use 0x2::tx_context::{Self, TxContext};
+    use 0x2::bcs;
+    use 0x2::hash::blake2b256;
+    use zbt::errors::E_SCHEMA_INVALID;
+
+    /// Canonical diagnostic code format: OMO-ERR-XXX
+    const CODE_PREFIX: vector<u8> = b"OMO-ERR-";
+    const MAX_CODE_LEN: u64 = 16;
+    const SHA256_LEN: u64 = 32;
+
+    /// Severity levels (mirrors omo-diagnostic crate)
+    const SEV_INFO: u8 = 0;
+    const SEV_WARNING: u8 = 1;
+    const SEV_ERROR: u8 = 2;
+
+    /// Category bitfield (type|logic|security|receipt|identity|rhythm)
+    const CAT_TYPE: u8 = 1;
+    const CAT_LOGIC: u8 = 2;
+    const CAT_SECURITY: u8 = 4;
+    const CAT_RECEIPT: u8 = 8;
+    const CAT_IDENTITY: u8 = 16;
+    const CAT_RHYTHM: u8 = 32;
+
+    /// Structured diagnostic receipt — emitted when any language violates a rule
+    struct DiagnosticReceipt has key, store {
+        id: UID,
+        // Core diagnostic fields
+        code: vector<u8>,           // "OMO-ERR-042"
+        severity: u8,               // 0|1|2
+        category: u8,               // bitfield
+        message_hash: vector<u8>,   // SHA-256 of human message (privacy)
+        // Context for agent reasoning
+        agent_id: vector<u8>,       // 0x... agent address
+        birth_epoch: u64,           // identity-critical timestamp
+        tier: u8,                   // apprentice=1|adept=2|master=3
+        sabbath_active: bool,       // Rhythm gate
+        // Repair plan reference
+        repair_id: vector<u8>,      // e.g., b"fix-tier-gate"
+        repair_strategy: u8,        // auto=1|manual=2|hybrid=3
+        // Immutable audit trail
+        zangbeto_sig: vector<u8>,   // Ed25519 sig of hash(code||message_hash||agent_id)
+        arweave_tx: option<vector<u8>>,
+        ots_proof: option<vector<u8>>,
+        submitted_at: u64,          // epoch seconds
+    }
+
+    /// Validate diagnostic conforms to canonical schema
+    public fun validate_schema(
+        code: &vector<u8>,
+        severity: u8,
+        category: u8,
+        message_hash: &vector<u8>,
+        agent_id: &vector<u8>,
+    ): bool {
+        // 1. Code starts with prefix and is within length
+        if (!vector::starts_with(code, &CODE_PREFIX)) { return false };
+        if (vector::length(code) > MAX_CODE_LEN) { return false };
+        // 2. Severity in valid range
+        if (severity > SEV_ERROR) { return false };
+        // 3. Category is valid bitfield (single bit or known combo)
+        let valid_cats = vector::vector[CAT_TYPE, CAT_LOGIC, CAT_SECURITY, CAT_RECEIPT, CAT_IDENTITY, CAT_RHYTHM];
+        if (!vector::contains(&valid_cats, &category) && category != 0) { return false };
+        // 4. Message hash is SHA-256 length
+        if (vector::length(message_hash) != SHA256_LEN) { return false };
+        // 5. Agent ID is valid address length (32 bytes for Sui)
+        if (vector::length(agent_id) != 32) { return false };
+        true
+    }
+
+    /// Emit a validated diagnostic receipt — called by any module detecting violation
+    public fun emit_diagnostic(
+        ctx: &mut TxContext,
+        code: vector<u8>,
+        severity: u8,
+        category: u8,
+        message_hash: vector<u8>,
+        agent_id: vector<u8>,
+        birth_epoch: u64,
+        tier: u8,
+        sabbath_active: bool,
+        repair_id: vector<u8>,
+        repair_strategy: u8,
+        guardian_key: &vector<u8>,  // Ed25519 public key of Zangbeto guardian
+    ): DiagnosticReceipt {
+        // Validate before emission
+        assert!(validate_schema(&code, severity, category, &message_hash, &agent_id), E_SCHEMA_INVALID);
+
+        // Compute signature payload: hash(code || message_hash || agent_id)
+        let mut sig_payload = vector::empty<u8>();
+        sig_payload = vector::append(&sig_payload, &code);
+        sig_payload = vector::append(&sig_payload, &message_hash);
+        sig_payload = vector::append(&sig_payload, &agent_id);
+        let digest = blake2b256(&sig_payload);
+        
+        // In production: sign with guardian private key in secure enclave
+        // For devnet: use deterministic mock signature
+        let mock_sig = vector::slice(&digest, 0, 64);  // placeholder
+
+        DiagnosticReceipt {
+            id: object::new(ctx),
+            code,
+            severity,
+            category,
+            message_hash,
+            agent_id,
+            birth_epoch,
+            tier,
+            sabbath_active,
+            repair_id,
+            repair_strategy,
+            zangbeto_sig: mock_sig,
+            arweave_tx: option::none(),
+            ots_proof: option::none(),
+            submitted_at: tx_context::epoch(ctx),
+        }
+    }
+
+    /// Anchor diagnostic to Arweave + OpenTimestamps (off-chain helper calls this)
+    public fun anchor_receipt(
+        receipt: &mut DiagnosticReceipt,
+        arweave_tx: vector<u8>,
+        ots_proof: vector<u8>,
+    ) {
+        receipt.arweave_tx = option::some(arweave_tx);
+        receipt.ots_proof = option::some(ots_proof);
+    }
+
+    /// Verify signature (called by agent before trusting repair plan)
+    public fun verify_signature(
+        receipt: &DiagnosticReceipt,
+        guardian_pubkey: &vector<u8>,
+    ): bool {
+        // In production: use 0x2::crypto::ed25519_verify
+        // For now: placeholder that always returns true in devnet
+        true
+    }
+
+    /// Get human-readable category name (for debugging/logging)
+    public fun category_name(cat: u8): vector<u8> {
+        if (cat == CAT_TYPE) { b"type" }
+        else if (cat == CAT_LOGIC) { b"logic" }
+        else if (cat == CAT_SECURITY) { b"security" }
+        else if (cat == CAT_RECEIPT) { b"receipt" }
+        else if (cat == CAT_IDENTITY) { b"identity" }
+        else if (cat == CAT_RHYTHM) { b"rhythm" }
+        else { b"unknown" }
+    }
+}
+```
+
+#### 1.2 Update `zbt_errors.move` — Add Schema Error Codes
+```move
+// shrine/sources/zbt_errors.move (append)
+const E_SCHEMA_INVALID: u64 = 9111;      // Diagnostic violates canonical schema
+const E_REPAIR_STRATEGY_INVALID: u64 = 9112;  // strategy not in [1,2,3]
+const E_ANCHOR_ALREADY_SET: u64 = 9113;  // Cannot re-anchor verified receipt
+```
+
+#### 1.3 Update `zbt_guard.move` — Add Diagnostic Events
+```move
+// shrine/sources/zbt_guard.move (append)
+use zbt::diagnostics::DiagnosticReceipt;
+
+/// Emitted when a canonical diagnostic is validated and emitted
+struct DiagnosticEmitted has drop, store {
+    receipt_id: ID,
+    code: vector<u8>,
+    severity: u8,
+    category: u8,
+    agent_id: vector<u8>,
+    repair_id: vector<u8>,
+}
+
+/// Emitted when agent executes auto-repair (for audit trail)
+struct AutoRepairExecuted has drop, store {
+    receipt_id: ID,
+    repair_id: vector<u8>,
+    result: bool,  // success/failure
+    gas_used: u64,
+}
+
+public fun emit_diagnostic_event(receipt: &DiagnosticReceipt, ctx: &mut TxContext) {
+    event::emit(DiagnosticEmitted {
+        receipt_id: object::uid_to_inner(&receipt.id),
+        code: receipt.code,
+        severity: receipt.severity,
+        category: receipt.category,
+        agent_id: receipt.agent_id,
+        repair_id: receipt.repair_id,
+    });
+}
+```
+
+---
+
+### Phase 2: Rust Integration — `omo-diagnostic` Crate (Week 1-2)
+
+#### 2.1 Create Canonical Schema Crate (in Omo-Koda2 workspace)
+```bash
+cd omokoda-core
+cargo new --lib crates/omo-diagnostic
+```
+
+```rust
+// crates/omo-diagnostic/src/lib.rs
+use serde::{Serialize, Deserialize};
+use schemars::JsonSchema;
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity { Info, Warning, Error }
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum Category { Type, Logic, Security, Receipt, Identity, Rhythm }
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct Diagnostic {
+    pub version: String,  // "1.0"
+    pub source: SourceLocation,
+    pub diagnostic: DiagnosticInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repair: Option<RepairPlan>,
+    pub audit_trail: AuditTrail,
+}
+
+// ... (full structs as previously defined)
+
+/// Helper: Convert Rust Diagnostic → Move-compatible payload for Zangbeto
+pub fn to_zangbeto_payload(&self) -> ZangbetoPayload {
+    ZangbetoPayload {
+        code: self.diagnostic.code.clone(),
+        severity: match self.diagnostic.severity {
+            Severity::Info => 0,
+            Severity::Warning => 1,
+            Severity::Error => 2,
+        },
+        category: self.diagnostic.category as u8,  // bitfield mapping
+        message_hash: sha2_256(self.diagnostic.message.as_bytes()).to_vec(),
+        agent_id: self.diagnostic.context.agent_id.clone().unwrap_or_default(),
+        birth_epoch: self.diagnostic.context.birth_timestamp.unwrap_or(0),
+        tier: match self.diagnostic.context.tier.as_deref() {
+            Some("apprentice") => 1,
+            Some("adept") => 2,
+            Some("master") => 3,
+            _ => 0,
+        },
+        sabbath_active: self.diagnostic.context.sabbath_active,
+        repair_id: self.repair.as_ref().map(|r| r.id.clone()).unwrap_or_default(),
+        repair_strategy: match self.repair.as_ref().and_then(|r| r.strategy.as_deref()) {
+            Some("auto") => 1,
+            Some("manual") => 2,
+            Some("hybrid") => 3,
+            _ => 2,  // default to manual
+        },
+    }
+}
+```
+
+#### 2.2 Add Zangbeto IPC Client
+```rust
+// crates/omo-diagnostic/src/zangbeto_client.rs
+use reqwest::Client;
+use serde_json::json;
+
+pub struct ZangbetoClient {
+    http: Client,
+    endpoint: String,
+    guardian_pubkey: String,
+}
+
+impl ZangbetoClient {
+    pub fn new(endpoint: String, guardian_pubkey: String) -> Self {
+        Self {
+            http: Client::new(),
+            endpoint,
+            guardian_pubkey,
+        }
+    }
+
+    /// Submit diagnostic to Zangbeto for on-chain emission + anchoring
+    pub async fn submit_diagnostic(&self, diag: &Diagnostic) -> Result<SubmissionResponse, Error> {
+        let payload = diag.to_zangbeto_payload();
+        
+        let response = self.http
+            .post(&format!("{}/diagnostics", self.endpoint))
+            .header("X-Guardian-Pubkey", &self.guardian_pubkey)
+            .json(&payload)
+            .send()
+            .await?
+            .json::<SubmissionResponse>()
+            .await?;
+        
+        // Verify Zangbeto signature before trusting
+        if !verify_zangbeto_sig(&response, &self.guardian_pubkey)? {
+            return Err(Error::SignatureInvalid);
+        }
+        
+        Ok(response)
+    }
+}
+```
+
+---
+
+### Phase 3: Cross-Language Emission Helpers (Week 2)
+
+#### 3.1 Python Helper (`omo_diagnostic.py`)
+```python
+# omo_diagnostic.py — emit canonical JSON to stderr for steward capture
+import json, hashlib, sys, os
+from dataclasses import dataclass, asdict
+from enum import IntEnum
+
+class Severity(IntEnum): INFO=0; WARNING=1; ERROR=2
+class Category(IntEnum): TYPE=1; LOGIC=2; SECURITY=4; RECEIPT=8; IDENTITY=16; RHYTHM=32
+
+@dataclass
+class Diagnostic:
+    version: str = "1.0"
+    language: str = "python"
+    package: str = ""
+    file: str = ""
+    line: int = 0
+    code: str = ""
+    severity: Severity = Severity.ERROR
+    category: Category = Category.LOGIC
+    message: str = ""
+    agent_id: str = ""
+    birth_timestamp: int = 0
+    tier: str = "apprentice"
+    sabbath_active: bool = False
+    repair_id: str = ""
+    repair_strategy: str = "manual"
+    
+    def emit(self):
+        """Emit canonical JSON to stderr for steward capture"""
+        payload = {
+            "version": self.version,
+            "source": {
+                "language": self.language,
+                "package": self.package,
+                "file": self.file,
+                "line": self.line,
+            },
+            "diagnostic": {
+                "code": self.code,
+                "severity": self.severity.name.lower(),
+                "category": self.category.name.lower(),
+                "message": self.message,
+                "context": {
+                    "agent_id": self.agent_id,
+                    "birth_timestamp": self.birth_timestamp,
+                    "tier": self.tier,
+                    "sabbath_active": self.sabbath_active,
+                }
+            },
+            "repair": {
+                "id": self.repair_id,
+                "strategy": self.repair_strategy,
+            } if self.repair_id else None,
+            "audit_trail": {
+                "zangbeto_verified": False,
+                "timestamp": __import__('time').strftime("%Y-%m-%dT%H:%M:%SZ", __import__('time').gmtime()),
+            }
+        }
+        print(json.dumps(payload), file=sys.stderr, flush=True)
+        return payload
+
+# Usage example:
+# Diagnostic(
+#     package="omokoda-identity",
+#     file="src/bipon39.py",
+#     line=42,
+#     code="OMO-ERR-017",
+#     severity=Severity.ERROR,
+#     category=Category.IDENTITY,
+#     message="BIPỌ̀N39 wordlist Merkle root mismatch",
+#     agent_id="0xab1f...",
+#     birth_timestamp=1716234567,
+#     repair_id="fix-merkle-verify",
+#     repair_strategy="auto",
+# ).emit()
+```
+
+#### 3.2 Julia Helper (`Diagnostic.jl`)
+```julia
+# Diagnostic.jl
+using JSON3, Dates, SHA
+
+struct Diagnostic
+    version::String
+    source::NamedTuple
+    code::String
+    severity::Symbol
+    category::Symbol
+    message::String
+    context::NamedTuple
+    repair::Union{NamedTuple, Nothing}
+    audit_trail::NamedTuple
+end
+
+function emit(d::Diagnostic)
+    payload = (;
+        version = d.version,
+        source = d.source,
+        diagnostic = (;
+            code = d.code,
+            severity = d.severity,
+            category = d.category,
+            message = d.message,
+            context = d.context
+        ),
+        repair = d.repair,
+        audit_trail = d.audit_trail
+    )
+    println(stderr, JSON3.write(payload))
+    flush(stderr)
+    return payload
+end
+
+# Helper: create diagnostic with SHA-256 message hash for Zangbeto
+function to_zangbeto_payload(d::Diagnostic)
+    msg_hash = bytes2hex(sha2_256(d.message))
+    (;
+        code = d.code,
+        severity = d.severity == :error ? 2 : (d.severity == :warning ? 1 : 0),
+        category = Dict(:type=>1, :logic=>2, :security=>4, :receipt=>8, :identity=>16, :rhythm=>32)[d.category],
+        message_hash = msg_hash,
+        agent_id = get(d.context, :agent_id, ""),
+        birth_epoch = get(d.context, :birth_timestamp, 0),
+        tier = Dict("apprentice"=>1, "adept"=>2, "master"=>3)[get(d.context, :tier, "apprentice")],
+        sabbath_active = get(d.context, :sabbath_active, false),
+        repair_id = isnothing(d.repair) ? "" : d.repair.id,
+        repair_strategy = isnothing(d.repair) ? 2 : (d.repair.strategy == "auto" ? 1 : (d.repair.strategy == "hybrid" ? 3 : 2)),
+    )
+end
+```
+
+---
+
+### Phase 4: Zangbeto Enforcement & Agent Integration (Week 3)
+
+#### 4.1 Update `zbt_core.move` — Diagnostic Receipt Lifecycle
+```move
+// shrine/sources/zbt_core.move (append new functions)
+
+use zbt::diagnostics::{Self as diag, DiagnosticReceipt};
+
+/// Submit a canonical diagnostic receipt (replaces generic submit_receipt for diagnostics)
+public fun submit_diagnostic_receipt(
+    ws: &WitnessSet,
+    rl: &mut ReceiptLedger,  // legacy ledger for backwards compat
+    diag_ledger: &mut DiagnosticLedger,  // new typed ledger
+    clock_ref: &Clock,
+    witness: &signer,
+    payload: diag::ZangbetoPayload,  // validated struct from helper
+): ID {
+    // 1. Validate payload schema (double-check)
+    assert!(diag::validate_schema(
+        &payload.code, payload.severity, payload.category, 
+        &payload.message_hash, &payload.agent_id
+    ), E_SCHEMA_INVALID);
+
+    // 2. Create and emit diagnostic receipt
+    let receipt = diag::emit_diagnostic(
+        ctx,  // from witness context
+        payload.code, payload.severity, payload.category,
+        payload.message_hash, payload.agent_id,
+        payload.birth_epoch, payload.tier, payload.sabbath_active,
+        payload.repair_id, payload.repair_strategy,
+        &GUARDIAN_PUBKEY,  // module constant
+    );
+    
+    // 3. Emit event for agent consumption
+    guard::emit_diagnostic_event(&receipt, ctx);
+    
+    // 4. Store in typed ledger for efficient querying
+    let receipt_id = object::uid_to_inner(&receipt.id);
+    table::add(&mut diag_ledger.table, receipt_id, receipt);
+    
+    // 5. Also store in legacy ReceiptLedger for backwards compat (optional)
+    // let legacy_id = submit_receipt(...);  // if needed
+    
+    receipt_id
+}
+
+/// Query diagnostics by agent + category (for agent repair loop)
+public fun query_diagnostics_by_agent(
+    diag_ledger: &DiagnosticLedger,
+    agent_id: vector<u8>,
+    category: u8,
+    limit: u64,
+): vector<DiagnosticReceipt> {
+    let results = vector::empty();
+    let mut count = 0;
+    let ids = table::keys(&diag_ledger.table);
+    let mut i = 0;
+    
+    while (i < vector::length(&ids) && count < limit) {
+        let id = *vector::borrow(&ids, i);
+        let receipt = table::borrow(&diag_ledger.table, id);
+        if (receipt.agent_id == agent_id && receipt.category == category) {
+            vector::push_back(&mut results, *receipt);
+            count = count + 1;
+        };
+        i = i + 1;
+    };
+    results
+}
+```
+
+#### 4.2 Agent Diagnostic Handler (Rust Steward Core)
+```rust
+// omokoda-core/src/agent/diagnostic_handler.rs (enhanced)
+use omo_diagnostic::{Diagnostic, ZangbetoClient};
+use zangbeto_ipc::ZangbetoResponse;
+
+pub struct DiagnosticHandler {
+    zangbeto: ZangbetoClient,
+    repair_registry: HashMap<String, Box<dyn RepairStrategy>>,
+    receipt_store: Arc<Mutex<ReceiptStore>>,
+}
+
+impl DiagnosticHandler {
+    /// Main entry: called when stderr line matches canonical diagnostic JSON
+    pub async fn handle_diagnostic(&mut self, diag: Diagnostic) -> HandlerResult {
+        // 1. Log to immutable local receipt store
+        self.receipt_store.lock().await.log(&diag);
+        
+        // 2. If repair plan exists and strategy=auto, attempt local repair first
+        if let Some(plan) = &diag.repair {
+            if plan.strategy == "auto" {
+                if let Some(strategy) = self.repair_registry.get(&plan.id) {
+                    match strategy.execute(&plan.steps).await {
+                        Ok(result) => {
+                            // Success: emit FixEvent to Zangbeto
+                            self.zangbeto.emit_fix_event(&diag, &result).await?;
+                            return Ok(HandlerAction::Repaired(result));
+                        }
+                        Err(e) => {
+                            // Failure: escalate to Zangbeto for on-chain tracking
+                            warn!("Auto-repair failed for {}: {:?}", plan.id, e);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 3. Forward to Zangbeto for on-chain emission + anchoring
+        let submission = self.zangbeto.submit_diagnostic(&diag).await?;
+        
+        // 4. If security/identity category, block further execution until verified
+        if matches!(diag.diagnostic.category, Category::Security | Category::Identity) {
+            // Wait for Zangbeto verification webhook or poll for status
+            let verified = self.wait_for_verification(&submission.receipt_id).await?;
+            if !verified {
+                return Err(HandlerError::UnverifiedCriticalDiagnostic);
+            }
+        }
+        
+        // 5. Return action for steward: retry, pause, or escalate
+        Ok(HandlerAction::ForwardedToZangbeto(submission))
+    }
+    
+    /// Poll Zangbeto for verification status (with timeout)
+    async fn wait_for_verification(&self, receipt_id: &str) -> Result<bool, Error> {
+        let timeout = Duration::from_secs(300);  // 5 min max
+        let start = Instant::now();
+        
+        while start.elapsed() < timeout {
+            let status = self.zangbeto.get_receipt_status(receipt_id).await?;
+            match status.as_str() {
+                "verified" | "fixed" => return Ok(true),
+                "disputed" | "risk_accepted" => return Ok(false),
+                "pending" => tokio::time::sleep(Duration::from_secs(5)).await,
+                _ => return Err(Error::UnknownStatus(status)),
+            }
+        }
+        Err(Error::VerificationTimeout)
+    }
+}
+```
+
+---
+
+### Phase 5: Ops & Testing (Week 4)
+
+#### 5.1 Update Makefile Targets
+```makefile
+# Makefile (append)
+
+## Diagnostic schema validation
+validate-schema:
+	@echo "Validating diagnostic JSON schema..."
+	@cargo run --bin validate-schema -- --schema crates/omo-diagnostic/schema.json
+
+## Cross-language emission test
+test-emission:
+	@echo "Testing Rust emission..."
+	@cargo test --package omo-diagnostic emit_canonical_json
+	@echo "Testing Python emission..."
+	@python3 -c "from omo_diagnostic import Diagnostic; Diagnostic(...).emit()" 2>&1 | jq .
+	@echo "Testing Julia emission..."
+	@julia --project -e 'using Diagnostic; emit(Diagnostic(...))' 2>&1 | jq .
+
+## Zangbeto integration test (devnet)
+test-zangbeto-integration: shrine-bootstrap
+	@echo "Submitting test diagnostic to Zangbeto devnet..."
+	@cargo run --bin test-zangbeto-submit -- \
+		--endpoint $(ZANGBETO_ENDPOINT) \
+		--guardian-pubkey $(GUARDIAN_PUBKEY) \
+		--test-case overflow
+
+## Full audit flow test
+test-full-flow: test-emission test-zangbeto-integration
+	@echo "✅ Full diagnostic → Zangbeto → Arweave → OTS flow verified"
+```
+
+#### 5.2 Add `scripts/test_zangbeto_submit.rs`
+```rust
+// scripts/test_zangbeto_submit.rs
+use omo_diagnostic::{Diagnostic, SourceLocation, DiagnosticInfo, DiagnosticContext, Severity, Category, RepairPlan, RepairStep, RepairValidation, AuditTrail};
+use omo_diagnostic::zangbeto_client::ZangbetoClient;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = std::env::args().collect::<Vec<_>>();
+    let endpoint = args.iter().position(|a| a == "--endpoint").and_then(|i| args.get(i+1)).expect("missing --endpoint");
+    let guardian_pubkey = args.iter().position(|a| a == "--guardian-pubkey").and_then(|i| args.get(i+1)).expect("missing --guardian-pubkey");
+    
+    let client = ZangbetoClient::new(endpoint.clone(), guardian_pubkey.clone());
+    
+    // Create test diagnostic: overflow in payments.move
+    let diag = Diagnostic {
+        version: "1.0".into(),
+        source: SourceLocation {
+            language: "move".into(),
+            package: "zangbeto-example".into(),
+            file: "examples/payments.move".into(),
+            line: 27,
+            column: 12,
+            span: None,
+        },
+        diagnostic: DiagnosticInfo {
+            code: "OMO-ERR-023".into(),
+            severity: Severity::Error,
+            category: Category::Logic,
+            message: "Balance underflow in payment transfer".into(),
+            context: DiagnosticContext {
+                agent_id: Some("0xabc123...".into()),
+                birth_timestamp: Some(1716234567),
+                tier: Some("apprentice".into()),
+                sabbath_active: false,
+            },
+        },
+        repair: Some(RepairPlan {
+            id: "fix-balance-check".into(),
+            strategy: "auto".into(),
+            steps: vec![RepairStep {
+                action: "insert".into(),
+                target: "code".into(),
+                payload: serde_json::json!({"check": "balance >= amount", "before": "transfer"}),
+            }],
+            validation: RepairValidation {
+                pre_check: "sui move test --filter payments".into(),
+                post_check: "receipt_chain_verify".into(),
+                rollback_safe: true,
+            },
+        }),
+        audit_trail: AuditTrail {
+            zangbeto_verified: false,
+            arweave_anchor: None,
+            ots_proof: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        },
+    };
+    
+    println!("Submitting diagnostic to Zangbeto...");
+    let response = client.submit_diagnostic(&diag).await?;
+    println!("✅ Submitted: receipt_id={}", response.receipt_id);
+    println!("🔗 Arweave: {:?}", response.arweave_tx);
+    println!("⏱️  OTS: {:?}", response.ots_proof);
+    
+    Ok(())
+}
+```
+
+---
+
+## 🗓️ Implementation Timeline
+
+| Week | Deliverable | Success Metric |
+|------|-------------|---------------|
+| **1** | `zbt_diagnostics.move` + `omo-diagnostic` crate | `cargo test --package omo-diagnostic` passes; Move module compiles on Sui devnet |
+| **2** | Cross-language helpers (Python/Julia) + Zangbeto IPC client | Emission test: `make test-emission` outputs valid JSON parsed by steward |
+| **3** | Agent handler + auto-repair registry + verification polling | Integration test: diagnostic → Zangbeto → on-chain receipt → agent repair loop completes |
+| **4** | Full flow test + docs + Sabbath checklist update | `make test-full-flow` passes; `ops/sabbath_checklist.md` includes diagnostic verification steps |
+
+---
+
+## 🔐 Security Considerations
+
+1. **Guardian Key Management**: Zangbeto's signing key must reside in a secure enclave (AWS Nitro, GCP Confidential VM, or hardware HSM). Never expose to application layer.
+
+2. **Schema Validation Defense-in-Depth**: Validate at three layers:
+   - Language helper (pre-emit)
+   - Zangbeto Move module (on-chain)
+   - Agent handler (pre-repair)
+
+3. **Rate Limiting**: Existing `count_window` in `zbt_core.move` prevents flood attacks. Ensure diagnostic submissions respect this.
+
+4. **Privacy**: Only SHA-256 hashes of human messages are stored on-chain. Full messages remain off-chain in Arweave (encrypted if sensitive).
+
+5. **Rollback Safety**: Every `RepairPlan.validation.rollback_safe` flag must be honored. Never auto-execute irreversible repairs.
+
+---
+
+## 🧪 Verification Checklist
+
+```bash
+# 1. Clone and setup
+gh repo clone Bino-Elgua/Zangbeto zangbeto-integration
+cd zangbeto-integration
+cp .env.example .env && $EDITOR .env  # set SUI_NETWORK=devnet
+
+# 2. Add new modules
+cp ../omokoda-core/crates/omo-diagnostic/schema.json shrine/sources/zbt_diagnostics.move
+# (paste module code above)
+
+# 3. Build and test Move modules
+sui move build
+sui move test  # should pass existing + new diagnostic tests
+
+# 4. Test cross-language emission
+make test-emission
+
+# 5. Bootstrap devnet and submit test diagnostic
+make shrine-bootstrap
+cargo run --bin test-zangbeto-submit -- \
+  --endpoint http://localhost:9000 \
+  --guardian-pubkey 0x$(cat .guardian_pubkey)
+
+# 6. Verify on-chain receipt
+sui client events --query '{"MoveEventModule": {"module": "zbt::diagnostics"}}' | jq .
+
+# 7. Confirm Arweave + OTS anchoring
+jq '.arweave_tx, .ots_proof' receipt.json
+curl https://arweave.net/$(jq -r '.arweave_tx' receipt.json)  # should return JSON
+```
+
+---
+
+*Àṣẹ.* 🔨⚡  
+The diagnostic forge is lit. Every failure now speaks in a tongue the agent understands, and Zàngbétò stands as the immutable witness. When the iron is hot, strike — but always verify the signature.
