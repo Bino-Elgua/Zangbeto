@@ -35,7 +35,7 @@ pub struct ValidationContext {
     pub metadata: serde_json::Value,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PolicyResult {
     Approved { reasons: Vec<String> },
     Rejected { reasons: Vec<String>, suggestion: Option<String> },

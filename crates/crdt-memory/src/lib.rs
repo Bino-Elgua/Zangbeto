@@ -187,20 +187,20 @@ pub trait MergeAlgebra: Sized {
     fn conflict_set(&self, other: &Self) -> ConflictSet;
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConflictSet {
     pub divergent_paths: Vec<String>,
     pub resolution_hints: Vec<ResolutionHint>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolutionHint {
     pub path: String,
     pub strategy: MergeStrategy,
     pub orisha_recommendation: Option<OrishaId>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MergeStrategy {
     Lww,          // Last-writer-wins
     Semantic,     // Domain-specific merge function
