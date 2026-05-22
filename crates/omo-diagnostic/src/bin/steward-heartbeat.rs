@@ -1,7 +1,8 @@
 //! Minimal self-healing heartbeat engine with mock Red/Blue agents
 use clap::Parser;
 use tokio::time::{interval, Duration};
-use omo_diagnostic::{Diagnostic, Severity, Category, DiagnosticContext, RepairPlan, RepairStrategy, RepairStep, RepairValidation};
+use omo_diagnostic::{Diagnostic, Severity, Category, DiagnosticContext, RepairPlan, RepairStrategy, RepairStep, RepairValidation, OrishaMask};
+use omo_diagnostic::agent::courts::{WhiteCourt, CourtDecision};
 use std::collections::HashMap;
 
 #[derive(Parser, Debug)]
@@ -25,7 +26,7 @@ impl MockRedAgent {
         match round % 4 {
             0 => Some(Diagnostic::new(
                 "rust".into(),
-                "Èṣù".into(),
+                OrishaMask::Eshu,
                 "src/interpreter.rs".into(),
                 142,
                 "OMO-ERR-017".into(),
@@ -55,12 +56,12 @@ impl MockRedAgent {
             })),
             1 => Some(Diagnostic::new(
                 "python".into(),
-                "Ògún".into(),
+                OrishaMask::Ogun,
                 "tools/data_fetcher.py".into(),
                 27,
                 "OMO-ERR-023".into(),
                 Severity::Error,
-                &[Category::Receipt],
+                &[Category::Receipt, Category::Security], // Trigger escalation
                 "Receipt validation missing null check".into(),
                 DiagnosticContext {
                     agent_id: Some("0xtest".into()),
@@ -78,10 +79,25 @@ impl MockRedAgent {
                     rollback_safe: true,
                 },
             })),
-            2 => None,
+            2 => Some(Diagnostic::new(
+                "lisp".into(),
+                OrishaMask::Obatala,
+                "ritual/core.lisp".into(),
+                108,
+                "OMO-ERR-666".into(),
+                Severity::Warning,
+                &[Category::Rhythm],
+                "Sabbath violation: active thought during rest".into(),
+                DiagnosticContext {
+                    agent_id: Some("0xrest".into()),
+                    birth_timestamp: Some(1716234567),
+                    tier: Some(4),
+                    sabbath_active: true, // Trigger Sabbath rejection
+                },
+            ).with_heartbeat_round(round)),
             _ => Some(Diagnostic::new(
                 "move".into(),
-                "Ṣàngó".into(),
+                OrishaMask::Shango,
                 "shrine/sources/example.move".into(),
                 33,
                 "OMO-ERR-042".into(),
@@ -176,6 +192,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let red = MockRedAgent;
     let blues = vec![MockBlueAgent::new(1), MockBlueAgent::new(2), MockBlueAgent::new(3)];
     let registry = DemoRepairRegistry::new();
+
+    let mut kernel_engine = omo_kernel::kernel::engine::StateTransitionEngine::new();
+    let mut current_state = omo_kernel::kernel::css::CanonicalSystemState::default();
+    let env_ctx = omo_kernel::kernel::engine::EnvironmentContext {
+        timestamp: chrono::Utc::now().timestamp() as u64,
+        external_signals: std::collections::HashMap::new(),
+    };
+
+    println!("🌐 Reality VM initialized: {}", current_state.state_hash);
+
     let (diag_tx, mut diag_rx) = tokio::sync::mpsc::channel::<Diagnostic>(100);
 
     let handler = omo_diagnostic::agent::diagnostic_handler::DiagnosticHandler::new(
@@ -204,10 +230,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   🔍 Found: {} (severity={:?}, category=0x{:x})", 
                      diag.diagnostic.code, diag.diagnostic.severity, diag.diagnostic.category);
 
+            // ⚪ White Court Arbitration
+            match WhiteCourt::arbitrate(&diag).await {
+                CourtDecision::Approve => println!("   ⚪ White Court: Approved"),
+                CourtDecision::Reject(reason) => {
+                    println!("   ⚪ White Court: REJECTED - {}", reason);
+                    continue;
+                }
+                CourtDecision::Escalate => {
+                    println!("   ⚪ White Court: ESCALATED to Twelve Thrones");
+                    continue;
+                }
+                CourtDecision::NeedsMoreInfo => {
+                    println!("   ⚪ White Court: Needs more info");
+                    continue;
+                }
+            }
+
             let blue = &blues[(round as usize) % blues.len()];
             match blue.handle_diagnostic(&diag).await {
                 Ok(fix) => {
                     println!("   🔵 Blue-{} proposed fix: {}", blue.id, fix.repair_id);
+
+                    // Update Reality VM state with the fix intent
+                    let intent = format!("Apply fix {} for {}", fix.repair_id, diag.diagnostic.code);
+                    match kernel_engine.transition(current_state.clone(), intent, env_ctx.clone()).await {
+                        Ok(new_state) => {
+                            current_state = new_state;
+                            println!("   🜂 Reality updated: {}", current_state.state_hash);
+                        }
+                        Err(e) => println!("   ⚠️ Reality transition failed: {}", e),
+                    }
                     
                     if registry.can_execute(&fix.repair_id) {
                         let can_auto = diag.diagnostic.severity as u8 <= auto_merge_threshold as u8

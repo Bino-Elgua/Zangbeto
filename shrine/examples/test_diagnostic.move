@@ -18,6 +18,11 @@ module zbt::test_diagnostic {
             b"fix-test",
             1, // Auto
             option::none(),
+            std::vector::empty(),
+            b"general",
+            option::none(),
+            option::none(),
+            b"global",
         );
     }
 }

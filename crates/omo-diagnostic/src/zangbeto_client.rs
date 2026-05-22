@@ -19,6 +19,11 @@ pub struct ZangbetoPayload {
     pub sabbath_active: bool,
     pub repair_id: String,
     pub repair_strategy: u8,
+    pub witness_quorum: Vec<String>,
+    pub constitutional_class: String,
+    pub economic_impact: Option<u64>,
+    pub seal_policy: Option<String>,
+    pub sovereign_scope: String,
 }
 
 impl ZangbetoPayload {
@@ -34,6 +39,11 @@ impl ZangbetoPayload {
             sabbath_active: diag.diagnostic.context.sabbath_active,
             repair_id: diag.repair.as_ref().map(|r| r.id.clone()).unwrap_or_default(),
             repair_strategy: diag.repair.as_ref().map(|r| r.strategy as u8).unwrap_or(2),
+            witness_quorum: diag.witness_quorum.clone(),
+            constitutional_class: diag.constitutional_class.clone(),
+            economic_impact: diag.economic_impact,
+            seal_policy: diag.seal_policy.clone(),
+            sovereign_scope: diag.sovereign_scope.clone(),
         }
     }
 }

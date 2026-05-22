@@ -5,6 +5,7 @@ use serde::{Serialize, Deserialize};
 use schemars::JsonSchema;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
+pub use omo_kernel::kernel::orisha::OrishaMask;
 
 // ─────────────────────────────────────────────────────
 // Canonical Enums (Bitmask-Compatible)
@@ -74,7 +75,7 @@ pub enum ReceiptStatus {
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Default)]
 pub struct SourceLocation {
     pub language: String,  // rust|julia|elixir|lisp|python|go|move|wasm|ts
-    pub orisha: String,    // Èṣù|Ọ̀ṣun|Yemọja|Ọbàtálá|Ògún|Ọya|Ṣàngó
+    pub orisha: OrishaMask, // Èṣù|Ọ̀ṣun|Yemọja|Ọbàtálá|Ògún|Ọya|Ṣàngó
     pub file: String,
     pub line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,7 +150,7 @@ pub struct Diagnostic {
     #[serde(default = "Uuid::new_v4")]
     pub trace_id: Uuid,
     pub language: String,
-    pub orisha: String,
+    pub orisha: OrishaMask,
     pub source: SourceLocation,
     pub diagnostic: DiagnosticInfo,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -157,6 +158,15 @@ pub struct Diagnostic {
     pub audit_trail: AuditTrail,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub red_team_round: Option<u64>,
+
+    // ─────────────────────────────────────────────────────
+    // Constitutional Receipt Fields
+    // ─────────────────────────────────────────────────────
+    pub witness_quorum: Vec<String>,
+    pub constitutional_class: String,
+    pub economic_impact: Option<u64>,
+    pub seal_policy: Option<String>,
+    pub sovereign_scope: String,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -170,7 +180,7 @@ pub enum DiagnosticError {
 impl Diagnostic {
     pub fn new(
         language: String,
-        orisha: String,
+        orisha: OrishaMask,
         file: String,
         line: u32,
         code: String,
@@ -183,7 +193,7 @@ impl Diagnostic {
             version: "1.1".into(),
             trace_id: Uuid::new_v4(),
             language: language.clone(),
-            orisha: orisha.clone(),
+            orisha,
             source: SourceLocation {
                 language,
                 orisha,
@@ -205,6 +215,11 @@ impl Diagnostic {
                 ts: Utc::now(),
             },
             red_team_round: None,
+            witness_quorum: vec![],
+            constitutional_class: "general".into(),
+            economic_impact: None,
+            seal_policy: None,
+            sovereign_scope: "global".into(),
         }
     }
 
@@ -229,5 +244,48 @@ impl Diagnostic {
         let mut hasher = Sha256::new();
         hasher.update(self.diagnostic.message.as_bytes());
         format!("{:x}", hasher.finalize())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_diagnostic_creation() {
+        let context = DiagnosticContext {
+            agent_id: Some("agent-1".into()),
+            birth_timestamp: Some(1000),
+            tier: Some(1),
+            sabbath_active: false,
+        };
+        let diag = Diagnostic::new(
+            "rust".into(),
+            OrishaMask::Eshu,
+            "main.rs".into(),
+            10,
+            "ERR-001".into(),
+            Severity::Error,
+            &[Category::Security, Category::Logic],
+            "Security breach".into(),
+            context,
+        );
+
+        assert_eq!(diag.orisha, OrishaMask::Eshu);
+        assert_eq!(diag.diagnostic.category, (Category::Security as u8 | Category::Logic as u8));
+        assert_eq!(diag.constitutional_class, "general");
+        assert_eq!(diag.sovereign_scope, "global");
+    }
+
+    #[test]
+    fn test_category_bitmask() {
+        let categories = vec![Category::Type, Category::Security];
+        let mask = Category::as_bitmask(&categories);
+        assert_eq!(mask, 1 | 4);
+        
+        let decoded = Category::from_bitmask(mask);
+        assert!(decoded.contains(&Category::Type));
+        assert!(decoded.contains(&Category::Security));
+        assert!(!decoded.contains(&Category::Logic));
     }
 }

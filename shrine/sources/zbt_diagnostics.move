@@ -55,6 +55,15 @@ module zbt::zbt_diagnostics {
         zangbeto_sig: vector<u8>,
         submitted_at: u64,
         red_team_round: Option<u64>,
+        arweave_tx: Option<vector<u8>>,
+        ots_proof: Option<vector<u8>>,
+
+        // Constitutional Receipt Fields
+        witness_quorum: vector<vector<u8>>,
+        constitutional_class: vector<u8>,
+        economic_impact: Option<u64>,
+        seal_policy: Option<vector<u8>>,
+        sovereign_scope: vector<u8>,
     }
 
     // ─────────────────────────────────────────────────────
@@ -96,6 +105,11 @@ module zbt::zbt_diagnostics {
         repair_id: vector<u8>,
         repair_strategy: u8,
         red_team_round: Option<u64>,
+        witness_quorum: vector<vector<u8>>,
+        constitutional_class: vector<u8>,
+        economic_impact: Option<u64>,
+        seal_policy: Option<vector<u8>>,
+        sovereign_scope: vector<u8>,
     ): DiagnosticReceipt {
         assert!(validate_schema(&code, severity, category, &message_hash, &agent_id), zbt_errors::E_SCHEMA_INVALID);
         assert!(repair_strategy >= 1 && repair_strategy <= 3, zbt_errors::E_REPAIR_STRATEGY_INVALID);
@@ -118,6 +132,11 @@ module zbt::zbt_diagnostics {
             ots_proof: option::none(),
             submitted_at: tx_context::epoch(ctx),
             red_team_round,
+            witness_quorum,
+            constitutional_class,
+            economic_impact,
+            seal_policy,
+            sovereign_scope,
         };
 
         zbt_guard::emit_diagnostic_event(

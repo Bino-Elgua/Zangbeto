@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+
+members = [
+  "crates/omo-diagnostic"
+, "crates/omo-kernel"]

@@ -80,12 +80,18 @@ module zbt::zbt_core {
         repair_id: vector<u8>,
         repair_strategy: u8,
         red_team_round: Option<u64>,
+        witness_quorum: vector<vector<u8>>,
+        constitutional_class: vector<u8>,
+        economic_impact: Option<u64>,
+        seal_policy: Option<vector<u8>>,
+        sovereign_scope: vector<u8>,
     ) {
         assert!(diag::validate_schema(&code, severity, category, &message_hash, &agent_id), zbt_errors::E_SCHEMA_INVALID);
         
         let receipt = diag::emit_diagnostic(
             ctx, code, severity, category, message_hash, agent_id,
-            birth_epoch, tier, sabbath_active, repair_id, repair_strategy, red_team_round
+            birth_epoch, tier, sabbath_active, repair_id, repair_strategy, red_team_round,
+            witness_quorum, constitutional_class, economic_impact, seal_policy, sovereign_scope
         );
         let receipt_id = object::id(&receipt);
 

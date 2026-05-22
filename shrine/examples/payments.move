@@ -1,7 +1,7 @@
 module app::payments {
-    use 0x2::tx_context::TxContext;
-    use 0x2::object::UID;
-    use zbt::guard;
+    use sui::tx_context::TxContext;
+    use sui::object::UID;
+    use zbt::zbt_guard;
 
     struct Treasury has key {
         id: UID,
@@ -9,10 +9,9 @@ module app::payments {
     }
 
     public fun settle_payment(t: &mut Treasury, amount: u64, _ctx: &mut TxContext) {
-        guard::invariant_true(t.balance >= amount, 1001);
-        t.balance = t.balance - amount;
-        if (t.balance < 0) {
-            guard::receipt(b"overflow", 2u8, b"payments.balance_check", b"<32-byte-digest>", _ctx);
+        if (t.balance < amount) {
+             zbt_guard::invariant_true(false, 1001);
         };
+        t.balance = t.balance - amount;
     }
 }

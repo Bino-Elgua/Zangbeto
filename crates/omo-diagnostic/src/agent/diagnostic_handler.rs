@@ -33,6 +33,22 @@ impl DiagnosticHandler {
         let diag: Diagnostic = serde_json::from_str(line)
             .map_err(|e| crate::DiagnosticError::SchemaInvalid(e.to_string()))?;
 
+        // ⚪ White Court Arbitration
+        match crate::agent::courts::WhiteCourt::arbitrate(&diag).await {
+            crate::agent::courts::CourtDecision::Approve => info!("⚪ White Court: Approved"),
+            crate::agent::courts::CourtDecision::Reject(reason) => {
+                info!("⚪ White Court: REJECTED - {}", reason);
+                return Ok(HandlerAction::Rejected(reason));
+            }
+            crate::agent::courts::CourtDecision::Escalate => {
+                info!("⚪ White Court: ESCALATED to Twelve Thrones");
+                return Ok(HandlerAction::EscalateToTwelveThrones);
+            }
+            crate::agent::courts::CourtDecision::NeedsMoreInfo => {
+                return Ok(HandlerAction::EscalateToHuman);
+            }
+        }
+
         self.diag_tx.send(diag.clone()).await
             .map_err(|_| crate::DiagnosticError::SchemaInvalid("Channel closed".into()))?;
 
@@ -60,7 +76,7 @@ impl DiagnosticHandler {
     }
 
     pub async fn execute_repair(&self, diag: &Diagnostic) -> Result<bool, Box<dyn std::error::Error>> {
-        let sandbox = Sandbox::new(&self.workspace_root).await?;
+        let _sandbox = Sandbox::new(&self.workspace_root).await?;
         
         if let Some(ref plan) = diag.repair {
             // In a real scenario, we'd apply the steps
@@ -88,6 +104,7 @@ impl DiagnosticHandler {
     }
 
     pub fn should_auto_merge(&self, diag: &Diagnostic) -> bool {
+        // Must pass White Court first (implied as it's called in handle_line)
         if diag.diagnostic.severity as u8 > self.auto_merge_threshold as u8 {
             return false;
         }
@@ -106,4 +123,6 @@ pub enum HandlerAction {
     VerifiedOnChain(crate::zangbeto_client::ZangbetoReceipt),
     LocalRepairEligible,
     EscalateToHuman,
+    EscalateToTwelveThrones,
+    Rejected(String),
 }

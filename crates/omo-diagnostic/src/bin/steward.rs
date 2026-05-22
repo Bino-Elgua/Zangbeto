@@ -21,6 +21,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::current_dir()?,
     );
 
+    let mut kernel_engine = omo_kernel::kernel::engine::StateTransitionEngine::new();
+    let mut current_state = omo_kernel::kernel::css::CanonicalSystemState::default();
+    let env_ctx = omo_kernel::kernel::engine::EnvironmentContext {
+        timestamp: chrono::Utc::now().timestamp() as u64,
+        external_signals: std::collections::HashMap::new(),
+    };
+
+    info!("🌐 Reality VM initialized: {}", current_state.state_hash);
+
     // ─────────────────────────────────────────────────────
     // Native Sui Event Listener (Mocked)
     // ─────────────────────────────────────────────────────
@@ -40,6 +49,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(diag) = diag_rx.recv().await {
         info!("📩 Processing diagnostic: {}", diag.diagnostic.code);
         let _ = archive.store_receipt(&diag);
+
+        // Update Reality VM state
+        let intent = format!("Handle diagnostic {}", diag.diagnostic.code);
+        match kernel_engine.transition(current_state.clone(), intent, env_ctx.clone()).await {
+            Ok(new_state) => {
+                current_state = new_state;
+                info!("🜂 Reality updated: {}", current_state.state_hash);
+            }
+            Err(e) => warn!("⚠️ Reality transition failed: {}", e),
+        }
         
         if handler.should_auto_merge(&diag) {
             info!("🛠  Executing auto-repair for {}", diag.diagnostic.code);
