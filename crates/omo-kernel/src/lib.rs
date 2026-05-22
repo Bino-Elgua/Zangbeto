@@ -1,5 +1,6 @@
 pub mod kernel;
 pub mod audit;
+pub mod zangbeto;
 
 #[cfg(test)]
 mod tests {
