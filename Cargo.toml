@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
 
-members = [
+members = ["crates/consensus-bft","crates/crdt-memory","crates/crypto-kernel",
   "crates/omo-diagnostic"
-, "crates/omo-kernel"]
+, "crates/omo-kernel", "crates/policy-runtime", "crates/replay-engine", "crates/vm-core"]
