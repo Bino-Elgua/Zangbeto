@@ -1,220 +1,74 @@
-module zbt::core {
-    use 0x2::tx_context::{TxContext};
-    use 0x2::sui::object::{Self as obj, UID, ID};
-    use 0x2::event;
-    use 0x2::table::{Self as table, Table};
-    use 0x2::clock::{Self as clock, Clock};
-    use 0x2::crypto::{blake2b256, ed25519_verify};
-    use 0x2::bcs;
-    use 0x2::vector;
-    use 0x2::signer;
-    use 0x2::object;
-    use zbt::errors::*;
+module zbt::zbt_core {
+    use std::vector;
+    use std::option::{Self, Option};
+    use sui::object::{Self, UID};
+    use sui::tx_context::{Self, TxContext};
+    use sui::table::{Self, Table};
+    use sui::transfer;
+    use zbt::zbt_diagnostics::{Self as diag, DiagnosticReceipt};
+    use zbt::zbt_errors;
+    use zbt::zbt_guard;
 
-    struct ReceiptSubmitted has drop, store { id: u64, witness: address, severity: u8 }
-    struct ReceiptStatusChanged has drop, store { id: u64, status: u8 }
-
-    struct WitnessSet has key {
+    // ─────────────────────────────────────────────────────
+    // Typed Diagnostic Ledger with Indexing
+    // ─────────────────────────────────────────────────────
+    struct DiagnosticLedger has key {
         id: UID,
-        admin_threshold: u8,
-        admins: vector<address>,
-        admin_pubkeys: Table<address, vector<u8>>,
-        witnesses: vector<address>,
+        // receipt_id -> DiagnosticReceipt
+        table: Table<sui::object::ID, DiagnosticReceipt>,
+        // agent_id -> list of receipt_ids
+        agent_index: Table<vector<u8>, vector<sui::object::ID>>,
+        // category_bit -> list of receipt_ids (for analytics)
+        category_index: Table<u8, vector<sui::object::ID>>,
+        // red_team_round -> list of receipt_ids (for heartbeat tracking)
+        round_index: Table<u64, vector<sui::object::ID>>,
     }
 
-    struct WitnessRegistry has key { id: UID, stats_table: Table<address, ID> }
-    struct AdminNonces has key { id: UID, nonces: Table<address, u64> }
-    struct WitnessStats has key { id: UID, last_submit: u64, count_window: u64 }
-
-    struct ReceiptMeta has store {
-        submitter: address,
-        timestamp: u64,
-        hash: vector<u8>,
-        tag: vector<u8>,
-        rule: vector<u8>,
-        severity: u8,
-        arweave_tx: vector<u8>,
-        btc_ots: vector<u8>,
-        status: u8,
+    // ─────────────────────────────────────────────────────
+    // Reputation & Bounty Tracking
+    // ─────────────────────────────────────────────────────
+    struct AgentReputation has key, store {
+        id: UID,
+        agent_id: vector<u8>,
+        birth_epoch: u64,
+        total_receipts: u64,
+        fixed_count: u64,
+        disputed_count: u64,
+        bounty_balance: u64,
+        last_active: u64,
     }
 
-    struct ReceiptLedger has key { id: UID, next_id: u64, table: Table<u64, ReceiptMeta> }
-
-    // Init functions
-    public fun init_witness_set(admin: &signer, admin_threshold: u8, admins: vector<address>, ctx: &mut TxContext): WitnessSet {
-        WitnessSet{ id: obj::new(ctx), admin_threshold, admins, admin_pubkeys: table::new(), witnesses: vector::empty() }
+    struct ReputationLedger has key {
+        id: UID,
+        table: Table<vector<u8>, AgentReputation>,
     }
 
-    public fun init_registry(_admin: &signer, ctx: &mut TxContext): WitnessRegistry {
-        WitnessRegistry { id: obj::new(ctx), stats_table: table::new() }
-    }
-
-    public fun init_admin_nonces(_admin: &signer, ctx: &mut TxContext): AdminNonces {
-        AdminNonces { id: obj::new(ctx), nonces: table::new() }
-    }
-
-    public fun init_witness_stats(_admin: &signer, _witness: address, ctx: &mut TxContext): (WitnessStats, ID) {
-        let stats = WitnessStats{ id: obj::new(ctx), last_submit: 0, count_window: 0 };
-        let id = obj::id(&stats.id);
-        (stats, id)
-    }
-
-    public fun init_ledger(_admin: &signer, ctx: &mut TxContext): ReceiptLedger {
-        ReceiptLedger { id: obj::new(ctx), next_id: 0, table: table::new() }
-    }
-
-    // Admin key registration
-    public fun register_admin_pubkey(ws: &mut WitnessSet, admin: &signer, pubkey: vector<u8>) {
-        let addr = signer::address_of(admin);
-        assert!(vector::contains(&ws.admins, &addr), E_NOT_ADMIN);
-        assert!(vector::length(&pubkey) == 32, E_PUBKEY_INVALID);
-        if (table::contains(&mut ws.admin_pubkeys, addr)) { table::remove(&mut ws.admin_pubkeys, addr); };
-        table::add(&mut ws.admin_pubkeys, addr, pubkey);
-    }
-
-    // Nonce handling
-    public fun current_nonce(nonces: &AdminNonces, admin: address): u64 {
-        if (table::contains(&nonces.nonces, admin)) { *table::borrow(&nonces.nonces, admin) } else { 0 }
-    }
-
-    public fun set_nonce(nonces: &mut AdminNonces, admin: address, val: u64) {
-        if (table::contains(&mut nonces.nonces, admin)) { table::remove(&mut nonces.nonces, admin); };
-        table::add(&mut nonces.nonces, admin, val);
-    }
-
-    // Admin signature verification
-    public fun is_admin_approved(ws: &WitnessSet, nonces: &mut AdminNonces, approving_addrs: vector<address>, approving_sigs: vector<vector<u8>>, op_tag: vector<u8>, nonce: u64, context: vector<u8>): bool {
-        let n = vector::length(&approving_addrs);
-        let ns = vector::length(&approving_sigs);
-        assert!(n == ns, E_SIG_INVALID);
-
-        let mut i = 0;
-        let mut count = 0;
-        let nonce_bytes = bcs::to_bytes(&nonce);
-        let mut msg = vector::empty<u8>();
-        msg = vector::concat(op_tag, vector::concat(nonce_bytes, context));
-        let digest = blake2b256(msg);
-
-        while (i < n) {
-            let addr = *vector::borrow(&approving_addrs, i);
-            let sig = *vector::borrow(&approving_sigs, i);
-
-            if (vector::contains(&ws.admins, &addr) && table::contains(&ws.admin_pubkeys, addr)) {
-                let pk = table::borrow(&ws.admin_pubkeys, addr);
-                if (ed25519_verify(&sig, pk, &digest)) {
-                    let cur = current_nonce(nonces, addr);
-                    assert!(nonce == cur + 1, E_NONCE_REUSED);
-                    set_nonce(nonces, addr, nonce);
-                    count = count + 1;
-                }
-            }
-            i = i + 1;
+    // ─────────────────────────────────────────────────────
+    // Initialization (One-Time Setup)
+    // ─────────────────────────────────────────────────────
+    public entry fun init(ctx: &mut TxContext) {
+        let diag_ledger = DiagnosticLedger {
+            id: object::new(ctx),
+            table: table::new(ctx),
+            agent_index: table::new(ctx),
+            category_index: table::new(ctx),
+            round_index: table::new(ctx),
         };
-        count >= ws.admin_threshold
-    }
+        transfer::share_object(diag_ledger);
 
-    // Witness management
-    public fun add_witness(ws: &mut WitnessSet, approving_addrs: vector<address>, approving_sigs: vector<vector<u8>>, nonces: &mut AdminNonces, new_witness: address, _ctx: &mut TxContext) {
-        let ok = is_admin_approved(ws, nonces, approving_addrs, approving_sigs, b"add_witness", current_nonce(nonces, *vector::borrow(&approving_addrs, 0)) + 1, bcs::to_bytes(&new_witness));
-        assert!(ok, E_NOT_ADMIN);
-        if (!vector::contains(&ws.witnesses, &new_witness)) { vector::push_back(&mut ws.witnesses, new_witness); }
-    }
-
-    public fun remove_witness(ws: &mut WitnessSet, approving_addrs: vector<address>, approving_sigs: vector<vector<u8>>, nonces: &mut AdminNonces, reg: &mut WitnessRegistry, witness: address, _ctx: &mut TxContext) {
-        let ok = is_admin_approved(ws, nonces, approving_addrs, approving_sigs, b"remove_witness", current_nonce(nonces, *vector::borrow(&approving_addrs, 0)) + 1, bcs::to_bytes(&witness));
-        assert!(ok, E_NOT_ADMIN);
-        let mut new_w = vector::empty<address>();
-        let n = vector::length(&ws.witnesses);
-        let mut i = 0;
-        while (i < n) {
-            let a = *vector::borrow(&ws.witnesses, i);
-            if (a != witness) { vector::push_back(&mut new_w, a); };
-            i = i + 1;
+        let rep_ledger = ReputationLedger {
+            id: object::new(ctx),
+            table: table::new(ctx),
         };
-        ws.witnesses = new_w;
-        if (table::contains(&mut reg.stats_table, witness)) { table::remove(&mut reg.stats_table, witness); };
+        transfer::share_object(rep_ledger);
     }
 
-    // Receipt lifecycle
-    public fun submit_receipt(ws: &WitnessSet, rl: &mut ReceiptLedger, reg: &mut WitnessRegistry, stats_id: ID, clock_ref: &Clock, witness: &signer, evidence_hash: vector<u8>, tag: vector<u8>, rule: vector<u8>, severity: u8, arweave_tx: vector<u8>, btc_ots: vector<u8>) : u64 {
-        let addr = signer::address_of(witness);
-        assert!(vector::contains(&ws.witnesses, &addr), E_NOT_WITNESS);
-        assert!(vector::length(&evidence_hash) == 32, E_EVIDENCE_HASH_INVALID);
-
-        let now = clock::timestamp_ms(clock_ref) / 1000;
-        let stats = obj::borrow_mut<WitnessStats>(stats_id);
-        if (now - stats.last_submit > 600) { stats.count_window = 0; };
-        assert!(stats.count_window < 10, E_RATE_LIMIT);
-
-        let id = rl.next_id;
-        rl.next_id = id + 1;
-        let meta = ReceiptMeta{ submitter: addr, timestamp: now, hash: evidence_hash, tag, rule, severity, arweave_tx, btc_ots, status: 0u8 };
-        table::add(&mut rl.table, id, meta);
-
-        stats.last_submit = now;
-        stats.count_window = stats.count_window + 1;
-        event::emit<ReceiptSubmitted>(ReceiptSubmitted{ id, witness: addr, severity });
-        id
-    }
-
-    public fun attest_verified(ws: &WitnessSet, rl: &mut ReceiptLedger, witness: &signer, id: u64, provided_hash: vector<u8>) {
-        let addr = signer::address_of(witness);
-        assert!(vector::contains(&ws.witnesses, &addr), E_NOT_WITNESS);
-        let meta = table::borrow_mut(&mut rl.table, id);
-        assert!(meta.hash == provided_hash, E_HASH_MISMATCH);
-        meta.status = 1u8;
-        event::emit<ReceiptStatusChanged>(ReceiptStatusChanged{ id, status: 1u8 });
-    }
-
-    public fun confirm_pending(ws: &WitnessSet, rl: &mut ReceiptLedger, witness: &signer, id: u64, provided_hash: vector<u8>, clock_ref: &Clock) {
-        let addr = signer::address_of(witness);
-        assert!(vector::contains(&ws.witnesses, &addr), E_NOT_WITNESS);
-        let meta = table::borrow_mut(&mut rl.table, id);
-        assert!(meta.status == 5u8, E_PENDING_STATUS);
-        assert!(meta.hash == provided_hash, E_HASH_MISMATCH);
-        let now = clock::timestamp_ms(clock_ref) / 1000;
-        assert!(now - meta.timestamp <= 600, E_PENDING_EXPIRED);
-        meta.status = 1u8;
-        event::emit<ReceiptStatusChanged>(ReceiptStatusChanged{ id, status: 1u8 });
-    }
-
-    public fun mark_disputed(ws: &WitnessSet, rl: &mut ReceiptLedger, witness: &signer, id: u64) {
-        let addr = signer::address_of(witness);
-        assert!(vector::contains(&ws.witnesses, &addr), E_NOT_WITNESS);
-        let meta = table::borrow_mut(&mut rl.table, id);
-        meta.status = 2u8;
-        event::emit<ReceiptStatusChanged>(ReceiptStatusChanged{ id, status: 2u8 });
-    }
-
-    public fun mark_fixed(ws: &WitnessSet, rl: &mut ReceiptLedger, witness: &signer, id: u64) {
-        let addr = signer::address_of(witness);
-        assert!(vector::contains(&ws.witnesses, &addr), E_NOT_WITNESS);
-        let meta = table::borrow(&rl.table, id);
-        assert!(addr == meta.submitter || vector::contains(&ws.admins, &addr), E_NOT_ADMIN);
-        let meta_mut = table::borrow_mut(&mut rl.table, id);
-        meta_mut.status = 3u8;
-        event::emit<ReceiptStatusChanged>(ReceiptStatusChanged{ id, status: 3u8 });
-    }
-
-    public fun accept_risk(ws: &WitnessSet, rl: &mut ReceiptLedger, witness: &signer, id: u64) {
-        let addr = signer::address_of(witness);
-        assert!(vector::contains(&ws.witnesses, &addr), E_NOT_WITNESS);
-        let meta = table::borrow_mut(&mut rl.table, id);
-        meta.status = 4u8;
-        event::emit<ReceiptStatusChanged>(ReceiptStatusChanged{ id, status: 4u8 });
-    }
-
-    public fun register_witness_stats(reg: &mut WitnessRegistry, witness: address, stats_id: ID) {
-        if (table::contains(&mut reg.stats_table, witness)) { table::remove(&mut reg.stats_table, witness); };
-        table::add(&mut reg.stats_table, witness, stats_id);
-    }
-
-    public fun submit_diagnostic_receipt(
-        ws: &WitnessSet,
-        rl: &mut ReceiptLedger,
-        diag_ledger: &mut zbt::diagnostics::DiagnosticLedger,
-        clock_ref: &Clock,
-        witness: &signer,
+    // ─────────────────────────────────────────────────────
+    // Submit Diagnostic to Typed Ledger (Canonical Entry)
+    // ─────────────────────────────────────────────────────
+    public entry fun submit_diagnostic(
+        ledger: &mut DiagnosticLedger,
+        ctx: &mut TxContext,
         code: vector<u8>,
         severity: u8,
         category: u8,
@@ -225,37 +79,115 @@ module zbt::core {
         sabbath_active: bool,
         repair_id: vector<u8>,
         repair_strategy: u8,
-        ctx: &mut TxContext,
-    ): object::ID {
-        let addr = signer::address_of(witness);
-        assert!(vector::contains(&ws.witnesses, &addr), E_NOT_WITNESS);
-
-        let receipt = zbt::diagnostics::emit_diagnostic(
-            ctx,
-            code,
-            severity,
-            category,
-            message_hash,
-            agent_id,
-            birth_epoch,
-            tier,
-            sabbath_active,
-            repair_id,
-            repair_strategy,
+        red_team_round: Option<u64>,
+    ) {
+        assert!(diag::validate_schema(&code, severity, category, &message_hash, &agent_id), zbt_errors::E_SCHEMA_INVALID);
+        
+        let receipt = diag::emit_diagnostic(
+            ctx, code, severity, category, message_hash, agent_id,
+            birth_epoch, tier, sabbath_active, repair_id, repair_strategy, red_team_round
         );
+        let receipt_id = object::id(&receipt);
 
-        let receipt_id = object::id(&receipt.id);
-        zbt::diagnostics::store_diagnostic(diag_ledger, receipt);
+        // Index by agent
+        if (!table::contains(&ledger.agent_index, agent_id)) {
+            table::add(&mut ledger.agent_index, agent_id, vector::empty());
+        };
+        let agent_receipts = table::borrow_mut(&mut ledger.agent_index, agent_id);
+        vector::push_back(agent_receipts, receipt_id);
 
-        zbt::guard::emit_diagnostic_event(
+        // Index by category bitmask
+        let bit = 1;
+        while (bit <= 32) {
+            if ((category & bit) == bit) {
+                if (!table::contains(&ledger.category_index, bit)) {
+                    table::add(&mut ledger.category_index, bit, vector::empty());
+                };
+                let cat_receipts = table::borrow_mut(&mut ledger.category_index, bit);
+                vector::push_back(cat_receipts, receipt_id);
+            };
+            bit = bit << 1;
+        };
+
+        // Index by red_team_round
+        if (option::is_some(&red_team_round)) {
+            let round = *option::borrow(&red_team_round);
+            if (!table::contains(&ledger.round_index, round)) {
+                table::add(&mut ledger.round_index, round, vector::empty());
+            };
+            let round_receipts = table::borrow_mut(&mut ledger.round_index, round);
+            vector::push_back(round_receipts, receipt_id);
+        };
+
+        zbt_guard::emit_diagnostic_submitted_event(
             receipt_id,
-            code,
-            severity,
-            category,
-            agent_id,
-            repair_id,
+            *diag::get_code(&receipt),
+            diag::get_severity(&receipt),
+            diag::get_category(&receipt),
+            *diag::get_agent_id(&receipt),
+            *diag::get_repair_id(&receipt),
+            *diag::get_red_team_round(&receipt),
         );
 
-        receipt_id
+        table::add(&mut ledger.table, receipt_id, receipt);
+    }
+
+    // ─────────────────────────────────────────────────────
+    // Query Helpers
+    // ─────────────────────────────────────────────────────
+    public fun query_by_agent(
+        ledger: &DiagnosticLedger,
+        agent_id: vector<u8>,
+        _limit: u64,
+    ): vector<sui::object::ID> {
+        if (!table::contains(&ledger.agent_index, agent_id)) { return vector::empty() };
+        *table::borrow(&ledger.agent_index, agent_id)
+    }
+
+    // ─────────────────────────────────────────────────────
+    // Reputation Management
+    // ─────────────────────────────────────────────────────
+    public entry fun register_agent(
+        rep_ledger: &mut ReputationLedger,
+        agent_id: vector<u8>,
+        birth_epoch: u64,
+        ctx: &mut TxContext,
+    ) {
+        if (!table::contains(&rep_ledger.table, agent_id)) {
+            let rep = AgentReputation {
+                id: object::new(ctx),
+                agent_id,
+                birth_epoch,
+                total_receipts: 0,
+                fixed_count: 0,
+                disputed_count: 0,
+                bounty_balance: 0,
+                last_active: tx_context::epoch(ctx),
+            };
+            table::add(&mut rep_ledger.table, agent_id, rep);
+        };
+    }
+
+    public entry fun mark_fixed_and_reward(
+        diag_ledger: &mut DiagnosticLedger,
+        rep_ledger: &mut ReputationLedger,
+        receipt_id: sui::object::ID,
+        fixer_agent: vector<u8>,
+        bounty_amount: u64,
+        ctx: &mut TxContext,
+    ) {
+        assert!(table::contains(&diag_ledger.table, receipt_id), zbt_errors::E_RECEIPT_NOT_FOUND);
+        
+        let receipt = table::borrow_mut(&mut diag_ledger.table, receipt_id);
+        diag::mark_fixed(receipt, ctx);
+        
+        if (table::contains(&rep_ledger.table, fixer_agent)) {
+            let rep = table::borrow_mut(&mut rep_ledger.table, fixer_agent);
+            rep.fixed_count = rep.fixed_count + 1;
+            rep.bounty_balance = rep.bounty_balance + bounty_amount;
+            rep.last_active = tx_context::epoch(ctx);
+        };
+        
+        zbt_guard::emit_fixed_event(receipt_id, fixer_agent, bounty_amount);
     }
 }

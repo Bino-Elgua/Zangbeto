@@ -1,0 +1,2 @@
+# No external dependencies required for omo_diagnostic.py as it uses standard libraries.
+# But if we were using requests or others, we'd list them here.

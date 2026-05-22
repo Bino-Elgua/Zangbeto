@@ -58,17 +58,3 @@ function to_zangbeto_payload(d::Diagnostic)
         :repair_strategy => isnothing(d.repair) ? 2 : (d.repair[:strategy] == "auto" ? 1 : (d.repair[:strategy] == "hybrid" ? 3 : 2))
     )
 end
-
-# Usage example:
-# d = Diagnostic(
-#     version = "1.0",
-#     source = (language = "julia", package = "myapp", file = "src/main.jl", line = 42),
-#     code = "OMO-ERR-001",
-#     severity = :error,
-#     category = :logic,
-#     message = "Balance underflow",
-#     context = (agent_id = "0x...", birth_timestamp = 1716234567, tier = "apprentice", sabbath_active = false),
-#     repair = nothing,
-#     audit_trail = (zangbeto_verified = false, timestamp = string(now()))
-# )
-# emit(d)

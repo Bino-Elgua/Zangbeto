@@ -1,16 +1,16 @@
+# omo_diagnostic.py — emit canonical JSON to stderr for steward capture
 import json
 import hashlib
 import sys
+import os
+import time
 from dataclasses import dataclass, asdict
 from enum import IntEnum
-from typing import Optional
-
 
 class Severity(IntEnum):
     INFO = 0
     WARNING = 1
     ERROR = 2
-
 
 class Category(IntEnum):
     TYPE = 1
@@ -20,7 +20,6 @@ class Category(IntEnum):
     IDENTITY = 16
     RHYTHM = 32
 
-
 @dataclass
 class Diagnostic:
     version: str = "1.0"
@@ -28,7 +27,6 @@ class Diagnostic:
     package: str = ""
     file: str = ""
     line: int = 0
-    column: int = 0
     code: str = ""
     severity: Severity = Severity.ERROR
     category: Category = Category.LOGIC
@@ -39,16 +37,16 @@ class Diagnostic:
     sabbath_active: bool = False
     repair_id: str = ""
     repair_strategy: str = "manual"
-
-    def to_dict(self) -> dict:
-        return {
+    
+    def emit(self):
+        """Emit canonical JSON to stderr for steward capture"""
+        payload = {
             "version": self.version,
             "source": {
                 "language": self.language,
                 "package": self.package,
                 "file": self.file,
                 "line": self.line,
-                "column": self.column,
             },
             "diagnostic": {
                 "code": self.code,
@@ -68,19 +66,11 @@ class Diagnostic:
             } if self.repair_id else None,
             "audit_trail": {
                 "zangbeto_verified": False,
-                "timestamp": __import__('time').strftime("%Y-%m-%dT%H:%M:%SZ", __import__('time').gmtime()),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
         }
-
-    def emit(self) -> str:
-        payload = self.to_dict()
         print(json.dumps(payload), file=sys.stderr, flush=True)
-        return json.dumps(payload)
-
-
-def hash_message(message: str) -> str:
-    return hashlib.sha256(message.encode()).hexdigest()
-
+        return payload
 
 if __name__ == "__main__":
     import argparse

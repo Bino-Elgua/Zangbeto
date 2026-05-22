@@ -1,4 +1,4 @@
-module zbt::errors {
+module zbt::zbt_errors {
     const E_NOT_WITNESS: u64 = 9101;
     const E_NOT_ADMIN: u64 = 9102;
     const E_RATE_LIMIT: u64 = 9103;
@@ -12,4 +12,6 @@ module zbt::errors {
     const E_SCHEMA_INVALID: u64 = 9111;
     const E_REPAIR_STRATEGY_INVALID: u64 = 9112;
     const E_ANCHOR_ALREADY_SET: u64 = 9113;
+    const E_INVALID_TRANSITION: u64 = 9114;
+    const E_RECEIPT_NOT_FOUND: u64 = 9115;
 }

@@ -1,0 +1,17 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Node
+node_modules/
+.env
+
+# MacOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Local Archive
+ops/archive/
